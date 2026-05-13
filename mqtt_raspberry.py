@@ -5,26 +5,36 @@ from paho.mqtt.client import CallbackAPIVersion
 import random
 import threading
 import os
+import queue
+import cv2
+import json
+import time
 
 broker = 'broker.emqx.io'
 port = 1883
-topic = "python/mqtt"
-client_id = f'python-mqtt-{random.randint(0, 100)}'
+topic_subscribe = "python/mqtt/commands"
+topic_publish = "python/mqtt/status"
+client_id = f'python-mqtt-subscriber-{random.randint(0, 10000)}'  # Fix 2: distinct prefix + wider range
 username = 'emqx'
 password = 'public'
 
-# --- Camera recording logic ---
 system = None
 cam = None
+cam_list = None
 recording = False
-spinview_path = "Lorem/Ipsum"  #Linux: "/opt/spinnaker/bin/spinview"
-save_dir = "path/to/save/directory"
-
+spinview_path = "C:/Program Files/Teledyne/Spinnaker/bin64/vs2015/SpinView_WPF_v140.exe"
+save_dir = "C:/Users/mensi/OneDrive/Desktop/Thesis/Recordings"
 os.makedirs(save_dir, exist_ok=True)
 
-def  start_spinnaker():
-    subprocess.Popen([spinview_path])
+
+def start_spinnaker():
     print("Spinnaker software started...")
+    subprocess.Popen([spinview_path])
+
+
+import queue
+
+frame_queue = queue.Queue(maxsize=500)
 
 def start_recording():
     global system, cam, cam_list, recording
@@ -32,54 +42,75 @@ def start_recording():
     cam_list = system.GetCameras()
     cam = cam_list[0]
     cam.Init()
-
-    # Set acquisition mode to continuous
     cam.AcquisitionMode.SetValue(PySpin.AcquisitionMode_Continuous)
     cam.BeginAcquisition()
     recording = True
     print("Recording started...")
 
+    processor = PySpin.ImageProcessor()
+    processor.SetColorProcessing(PySpin.SPINNAKER_COLOR_PROCESSING_ALGORITHM_HQ_LINEAR)
+
+    # Start a separate thread just for saving
+    saver_thread = threading.Thread(target=save_frames, daemon=True)
+    saver_thread.start()
+
     while recording:
-        image = cam.GetNextImage()
-        if not image.IsIncomplete():
-            # Convert from Bayer RAW to RGB
-            image_converted = image.Convert(PySpin.PixelFormat_RGB8, PySpin.HQ_LINEAR)
-            
-            filepath = os.path.join(save_dir, f"frame_{image.GetFrameID()}.jpg")
-            image_converted.Save(filepath)
-        image.Release()
+        try:
+            image = cam.GetNextImage()
+            if image.IsIncomplete():
+                image.Release()
+                continue
+
+            # Convert immediately and put raw data in queue — fast
+            image_converted = processor.Convert(image, PySpin.PixelFormat_BGR8)
+            frame_id = image.GetFrameID()
+            image.Release()  # release camera buffer ASAP
+
+            frame_queue.put((frame_id, image_converted.GetNDArray().copy()))
+
+        except PySpin.SpinnakerException as e:
+            print(f"Capture error: {e}")
+            break
+
+    frame_queue.put(None)  # signal saver to stop
+    saver_thread.join()
+
+def save_frames():
+    """Runs in its own thread, saves frames from the queue."""
+    while True:
+        item = frame_queue.get()
+        if item is None:
+            break
+        frame_id, frame_data = item
+        filepath = os.path.join(save_dir, f"frame_{frame_id}.jpg")
+        cv2.imwrite(filepath, frame_data)
 
 def stop_recording():
     global cam, cam_list, system, recording
     recording = False
-
     try:
         if cam is not None:
             cam.EndAcquisition()
             cam.DeInit()
-            del cam          # explicitly delete the reference
+            del cam
             cam = None
-
         if cam_list is not None:
-            cam_list.Clear()  # must clear BEFORE releasing system
+            cam_list.Clear()
             cam_list = None
-
         if system is not None:
             system.ReleaseInstance()
             system = None
-
         print("Recording stopped cleanly.")
-
     except PySpin.SpinnakerException as e:
         print(f"Error stopping recording: {e}")
 
-#  MQTT setup 
-def connect_mqtt() -> mqtt_client:
+
+def connect_mqtt():
     def on_connect(client, userdata, flags, rc, properties=None):
         if rc == 0:
             print("Connected to MQTT Broker!")
         else:
-            print("Failed to connect, return code %d\n", rc)
+            print(f"Failed to connect, return code {rc}")
 
     client = mqtt_client.Client(
         callback_api_version=CallbackAPIVersion.VERSION2,
@@ -93,24 +124,50 @@ def connect_mqtt() -> mqtt_client:
 
 def subscribe(client: mqtt_client):
     def on_message(client, userdata, msg):
-        payload = msg.payload.decode().strip()
-        print(f"Received `{payload}` from `{msg.topic}` topic")
+        payload = json.loads(msg.payload.decode())
+        command = payload["command"]
+        fire_at = payload["scheduled_at"]
+        print(f"Received `{payload}` from `{msg.topic}` topic")  # Fix 1: msg.topic not msg.topic_subscribe
 
-        #if payload == "5":
-        #    start_spinnaker()
+        now = time.time()
 
-        if payload == "15":
-            print("Starting recording...")
-            t = threading.Thread(target=start_recording)
-            t.daemon = True
-            t.start()
+        match command:
+            case "START_PLAYER":
+                start_spinnaker()
+                publish(client, "Application Started")
 
-        elif payload == "25":
-            print("Stopping recording...")
-            stop_recording()
+            case "START_RECORDING":
+                if fire_at > now:
+                    time.sleep(fire_at - now)
+                    while time.time() < fire_at:
+                        pass
+                publish(client, "Recording Started at " + str(time.time()))
+                print("Starting recording")
+                t = threading.Thread(target=start_recording)
+                t.daemon = True
+                t.start()
+                
 
-    client.subscribe(topic)
+            case "STOP_RECORDING":
+                if fire_at > now:
+                    time.sleep(fire_at - now)
+                    while time.time() < fire_at:
+                        pass
+                publish(client, "Recording Ended at " + str(time.time()))
+                print("Recording ended")
+                stop_recording()
+                
+
+    client.subscribe(topic_subscribe)
     client.on_message = on_message
+
+
+def publish(client, message):
+    result = client.publish(topic_publish, message, qos=1)
+    if result[0] == 0:
+        print(f"Sent '{message}' to topic {topic_publish}")
+    else:
+        print(f"Failed to send message to topic {topic_publish}")
 
 
 def run():
