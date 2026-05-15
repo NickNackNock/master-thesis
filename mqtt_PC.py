@@ -88,19 +88,19 @@ def run():
     time.sleep(1)
     client.loop_start()
     print("MQTT Publisher is running\n")
-    print("Press 'P' to show the player  (immediate)")
-    print("Press 'S' to start recording  (SYNCED)")
-    print("Press 'E' to end recording    (SYNCED)")
-    print("Press 'Q' to quit\n")
+    print("Press 'V' to open the Viewer  (immediate)")
+    print("Press 'R' to start Recording  (SYNCED)")
+    print("Press 'S' to Stop recording    (SYNCED)")
+    print("Press 'Q' to Quit\n")
 
     while True:
         key = get_keypress().upper()
 
-        if key == 'P':
+        if key == 'V':
             publish(client, "START_PLAYER")           # no sync needed
-        elif key == 'S':
+        elif key == 'R':
             publish_synced(client, "START_RECORDING") # all devices fire together
-        elif key == 'E':
+        elif key == 'S':
             publish_synced(client, "STOP_RECORDING")  # all devices stop together
         elif key == 'Q':
             print("\nDisconnecting...")
