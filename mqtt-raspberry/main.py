@@ -1,3 +1,5 @@
+import time
+
 import mqtt_handler
 
 
@@ -17,7 +19,7 @@ def main():
     except KeyboardInterrupt:
         print("\nShutting down…")
         import acquisition
-        acquisition.stop_recording()
+        acquisition.stop_recording(time.time())
 
 
 if __name__ == '__main__':
