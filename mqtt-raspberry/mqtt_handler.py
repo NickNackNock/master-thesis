@@ -46,7 +46,7 @@ def connect_mqtt():
     client.on_connect    = on_connect
     client.on_disconnect = on_disconnect
 
-    client.connect(BROKER, PORT)
+    client.connect(BROKER, PORT, keepalive = 5)
     return client
 
 
