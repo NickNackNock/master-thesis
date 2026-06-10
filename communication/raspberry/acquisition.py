@@ -6,6 +6,7 @@ import cv2
 import os
 from datetime import datetime
 import time
+import numpy as np
 
 # -- PATHS (edit here if needed) --
 SPINVIEW_PATH = "C:/Program Files/Teledyne/Spinnaker/bin64/vs2015/SpinView_WPF_v140.exe"
@@ -25,9 +26,7 @@ recording_thread = None
 frame_queue = queue.Queue(maxsize=BUFFER_SIZE)
 
 
-# ---------------------------------------------------------------------------
 # Public API
-# ---------------------------------------------------------------------------
 
 def open_viewer():
     """Launch the Spinnaker SpinView viewer application."""
@@ -35,7 +34,7 @@ def open_viewer():
     subprocess.Popen([SPINVIEW_PATH])
 
 
-def start_recording(fire_at):
+def start_recording(fire_at, on_status = None):
     global system, cam, cam_list, recording
 
     # Set the cameras connected (Just one)
@@ -60,13 +59,9 @@ def start_recording(fire_at):
     cam.AcquisitionFrameRate.SetValue(TARGET_FPS)
     cam.AcquisitionMode.SetValue(PySpin.AcquisitionMode_Continuous)
 
-    # Acquisition
-    cam.BeginAcquisition()
-    recording = True
-
     # Setting color image RGB
-    processor = PySpin.ImageProcessor()
-    processor.SetColorProcessing(PySpin.SPINNAKER_COLOR_PROCESSING_ALGORITHM_BILINEAR)
+    #processor = PySpin.ImageProcessor()
+    #processor.SetColorProcessing(PySpin.SPINNAKER_COLOR_PROCESSING_ALGORITHM_BILINEAR)
 
     # Saving type of name file (COULD BE FUNCTION THAT DOES THIS)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -90,7 +85,12 @@ def start_recording(fire_at):
         while time.time() < fire_at:
             pass
 
-    print(f"Recording actually started at {time.time():.3f}")
+    if on_status:
+        on_status(f"Recording started at {time.time():.3f}")
+
+    # Acquisition
+    cam.BeginAcquisition()
+    recording = True
 
     while recording:
         try:
@@ -112,12 +112,12 @@ def start_recording(fire_at):
             # If everything went right save that frame in RGB
             last_frame_id = frame_id
 
-            image_converted = processor.Convert(image, PySpin.PixelFormat_BGR8)
-            image.Release()
+            raw_array = image.GetNDArray().copy()  # copy raw Bayer data
+            image.Release()                         # release immediately, no conversion
 
             # This is in the case that the Queue buffer has overflown
             try:
-                frame_queue.put_nowait((frame_id, image_converted.GetNDArray().copy()))
+                frame_queue.put_nowait((frame_id, raw_array))
             except queue.Full:
                 print(f"Queue full, dropping frame {frame_id}")
 
@@ -132,23 +132,21 @@ def start_recording(fire_at):
 
 
 
-def stop_recording(fire_at):
+def stop_recording(fire_at, on_status = None):
     """
     Signal the capture loop to stop, release the camera, and wait for the
     saver thread to flush all queued frames before returning.
     """
     global recording_thread
     
-    stop_camera(fire_at)
+    stop_camera(fire_at, on_status=on_status)
 
     if recording_thread is not None:
         recording_thread.join()
         recording_thread = None
 
 
-# ---------------------------------------------------------------------------
 # Internal helpers
-# ---------------------------------------------------------------------------
 
 def init_camera():
     """Initialise the Spinnaker system and the first available camera."""
@@ -177,11 +175,9 @@ def init_camera():
     cam.AcquisitionMode.SetValue(PySpin.AcquisitionMode_Continuous)
 
 
-def stop_camera(fire_at):
+def stop_camera(fire_at, on_status = None):
     """Set the recording flag to False and release all camera resources."""
     global cam, cam_list, system, recording
-
-    recording = False
 
     # waiting time to start here
     now = time.time()
@@ -190,7 +186,9 @@ def stop_camera(fire_at):
         time.sleep(fire_at - now - 0.001)
         while time.time() < fire_at:
             pass
-
+    
+    recording = False
+    
     try:
         if cam is not None:
             cam.EndAcquisition()
@@ -204,18 +202,18 @@ def stop_camera(fire_at):
             system.ReleaseInstance()
             system = None
         print("Recording stopped cleanly.")
-        print(f"Recording actually ended at {time.time():.3f}")
+
+        if on_status:
+            on_status(f"Recording actually ended at {time.time():.3f}")
         
     except PySpin.SpinnakerException as e:
         print(f"Error stopping recording: {e}")
 
 
 def save_video(video_path):
-    """
-    Saver thread: reads frames from the queue and writes them to an MP4 file.
-    Exits when it receives the sentinel value None.
-    """
     writer = None
+    black_frame = None
+    last_frame_id = None
 
     while True:
         item = frame_queue.get()
@@ -228,8 +226,17 @@ def save_video(video_path):
             h, w = frame_data.shape[:2]
             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
             writer = cv2.VideoWriter(video_path, fourcc, TARGET_FPS, (w, h))
+            black_frame = np.zeros((h, w, 3), dtype=np.uint8)  # pre-allocated once
 
-        writer.write(frame_data)
+        # Fill any gap since the last frame with black frames
+        if last_frame_id is not None:
+            gap = frame_id - last_frame_id - 1
+            for _ in range(gap):
+                writer.write(black_frame)
+
+        frame_bgr = cv2.cvtColor(frame_data, cv2.COLOR_BayerBG2BGR)
+        writer.write(frame_bgr)
+        last_frame_id = frame_id
 
     if writer is not None:
         writer.release()
