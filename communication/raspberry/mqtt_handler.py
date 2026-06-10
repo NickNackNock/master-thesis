@@ -78,15 +78,20 @@ def subscribe(client: mqtt_client.Client):
                 publish(client, "SpinView launched")
 
             case "START_RECORDING":
-                publish(client, f"Recording started at {time.time():.3f}")
-                # Run in a thread so on_message returns immediately
-                threading.Thread(target = acquisition.start_recording, args=(fire_at,) ,daemon=True).start()
-                #acquisition.recording_thread.start() # stop_recording can properly wait for it to finish
+                threading.Thread(
+                    target=acquisition.start_recording,
+                    args=(fire_at,),
+                    kwargs={"on_status": lambda msg: publish(client, msg)},
+                    daemon=True
+                ).start()
 
             case "STOP_RECORDING":
-                publish(client, f"Recording stopped at {time.time():.3f}")
-                # stop_recording blocks until everything is flushed — keep it off the MQTT thread
-                threading.Thread(target=acquisition.stop_recording,args=(fire_at,) ,daemon=True).start()
+                threading.Thread(
+                    target=acquisition.stop_recording,
+                    args=(fire_at,),
+                    kwargs={"on_status": lambda msg: publish(client, msg)},
+                    daemon=True
+                ).start()
 
             case _:
                 print(f"Unknown command: '{command}'")
