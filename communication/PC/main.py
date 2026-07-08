@@ -1,11 +1,39 @@
 import random
 import sys
-import tty
-import termios
 import time
+import json
 from paho.mqtt import client as mqtt_client
 from paho.mqtt.client import CallbackAPIVersion
-import json
+
+# --- Cross-platform single keypress reader -------------------------------
+if sys.platform == "win32":
+    import msvcrt
+
+    def get_keypress():
+        # Blocks until a key is pressed, returns a single character string.
+        ch = msvcrt.getch()
+        # Handle special/multi-byte keys (arrows, function keys) gracefully
+        if ch in (b"\x00", b"\xe0"):
+            msvcrt.getch()  # discard the second byte of the special key
+            return ""
+        try:
+            return ch.decode("utf-8", errors="ignore")
+        except UnicodeDecodeError:
+            return ""
+else:
+    import tty
+    import termios
+
+    def get_keypress():
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            ch = sys.stdin.read(1)
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+        return ch
+# ---------------------------------------------------------------------------
 
 broker = 'broker.emqx.io'
 port = 1883
@@ -17,7 +45,7 @@ password = 'public'
 
 # How far ahead (seconds) to schedule the sync command.
 # Must be larger than worst-case network latency to all devices.
-SYNC_LEAD_TIME = 2.0
+SYNC_LEAD_TIME = 5.0
 
 
 def connect_mqtt():
@@ -73,17 +101,6 @@ def publish_synced(client, command):
     publish(client, command, scheduled_at=fire_at)
 
 
-def get_keypress():
-    fd = sys.stdin.fileno()
-    old_settings = termios.tcgetattr(fd)
-    try:
-        tty.setraw(sys.stdin.fileno())
-        ch = sys.stdin.read(1)
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-    return ch
-
-
 def run():
     client = connect_mqtt()
     time.sleep(1)
@@ -93,16 +110,14 @@ def run():
     print("Press 'R' to start Recording  (SYNCED)")
     print("Press 'S' to Stop recording    (SYNCED)")
     print("Press 'Q' to Quit\n")
-
     while True:
         key = get_keypress().upper()
-
         if key == 'V':
             publish(client, "START_PLAYER")           # no sync needed
         elif key == 'R':
             publish_synced(client, "START_RECORDING") # all devices fire together
         elif key == 'S':
-            publish_synced(client, "STOP_RECORDING")  # all devices stop together
+            publish(client, "STOP_RECORDING")  # all devices stop together
         elif key == 'Q':
             print("\nDisconnecting...")
             client.loop_stop()
