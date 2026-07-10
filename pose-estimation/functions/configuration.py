@@ -2,8 +2,8 @@ from pathlib import Path
 import torch
 
 # -------- DIRECTORIES --------
-VIDEO_NAME = "output_ultra_cut.mp4"
-INPUT_VIDEO = f"/home/neurolab/thesisProject/data/videos/{VIDEO_NAME}"
+VIDEO_NAME = "session_2026-07-07_17-17-02.805_cam1.mp4"
+INPUT_VIDEO = f"/home/neurolab/thesisProject/data/3d-pose/{VIDEO_NAME}"
 
 VIDEO_STEM = VIDEO_NAME[:-4]           # "output_ultra_cut"
 BASE_OUT   = Path(f"./output/{VIDEO_STEM}")
@@ -20,7 +20,33 @@ for _d in (OUTPUT_DIR_RAW_POSE, OUTPUT_DIR_RAW_GAZE,
 
 # -------- STEREO CALIBRATION --------
 # Example path setup in main.py
-STEREO_CALIB_FILE = "path/to/your/calibration_folder"
+# -------- STEREO 3D RECONSTRUCTION --------
+CAM1_VIDEO_NAME = "session_2026-07-07_17-17-02.805_cam1.mp4"
+CAM2_VIDEO_NAME = "session_2026-07-07_17-17-02.805_cam2.mp4"
+
+INPUT_VIDEO_CAM1 = f"/home/neurolab/thesisProject/data/videos/{CAM1_VIDEO_NAME}"
+INPUT_VIDEO_CAM2 = f"/home/neurolab/thesisProject/data/videos/{CAM2_VIDEO_NAME}"
+
+# Filtered pose xlsx for cam1
+OUTPUT_DIR_FILT_POSE_CAM1 = Path(f"./output/{CAM1_VIDEO_NAME[:-4]}/filtered/pose")
+OUTPUT_DIR_FILT_POSE_CAM1.mkdir(parents=True, exist_ok=True)
+OUTPUT_FILT_POSE_XLSX_CAM1 = OUTPUT_DIR_FILT_POSE_CAM1 / "pose_RTMO-L_filtered.xlsx"
+
+# Filtered pose xlsx for cam2
+OUTPUT_DIR_FILT_POSE_CAM2 = Path(f"./output/{CAM2_VIDEO_NAME[:-4]}/filtered/pose")
+OUTPUT_DIR_FILT_POSE_CAM2.mkdir(parents=True, exist_ok=True)
+OUTPUT_FILT_POSE_XLSX_CAM2 = OUTPUT_DIR_FILT_POSE_CAM2 / "pose_RTMO-L_filtered.xlsx"
+
+# Stereo calibration folder (contains .txt files)
+STEREO_CALIB_FILE = Path("/home/neurolab/thesisProject/data/3d-pose")
+
+# 3D reconstruction output
+OUTPUT_DIR_3D = Path(f"./output/3d_reconstruction")
+OUTPUT_DIR_3D.mkdir(parents=True, exist_ok=True)
+OUTPUT_3D_XLSX = OUTPUT_DIR_3D / "pose_3d.xlsx"
+
+# Frame offset: 0 if hardware-synced, otherwise the lag of cam2 relative to cam1
+STEREO_FRAME_OFFSET = 0
 
 
 # -------- DEVICE --------
