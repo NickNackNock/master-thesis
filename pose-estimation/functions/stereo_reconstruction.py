@@ -83,11 +83,11 @@ def load_stereo_calibration(calib_path: str) -> dict:
     # Load each matrix using numpy's text loader
     try:
         K1 = np.loadtxt(base_dir / "camera_matrix_cam1.txt")
-        d1 = np.loadtxt(base_dir / "distortion_coefficient_cam1.txt")
+        d1 = np.loadtxt(base_dir / "distortion_coefficients_cam1.txt")
         K2 = np.loadtxt(base_dir / "camera_matrix_cam2.txt")
-        d2 = np.loadtxt(base_dir / "distortion_coefficient_cam2.txt")
+        d2 = np.loadtxt(base_dir / "distortion_coefficients_cam2.txt")
         R  = np.loadtxt(base_dir / "Rotation_matrix.txt")
-        T  = np.loadtxt(base_dir / "Translation_Matrix.txt").flatten()  # ensure shape (3,)
+        T  = np.loadtxt(base_dir / "Translation_matrix.txt").flatten()  # ensure shape (3,)
     except FileNotFoundError as e:
         raise FileNotFoundError(
             f"Could not find all required calibration files in '{calib_path}'. "
@@ -107,8 +107,10 @@ def load_stereo_calibration(calib_path: str) -> dict:
     P1 = K1 @ np.hstack([np.eye(3),    np.zeros((3, 1))])
     P2 = K2 @ np.hstack([R,            T.reshape(3, 1) ])
 
-    calib.update({"E": E, "F": F, "P1": P1, "P2": P2, "T": T})
+    calib = {"K1": K1, "d1": d1, "K2": K2, "d2": d2, "R": R, "T": T,
+          "E": E, "F": F, "P1": P1, "P2": P2}
     return calib
+
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +168,7 @@ def undistort_keypoints(kps: np.ndarray, K: np.ndarray,
     systematic errors in 3D position that grow toward the image periphery.
 
     kps : (17, 2) array in pixel coordinates (may contain zeros for missing joints)
-    K   : 3×3 intrinsic matrix
+    K   : 3x3 intrinsic matrix
     d   : distortion coefficients
 
     Returns (17, 2) undistorted pixel coordinates.
