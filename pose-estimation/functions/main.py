@@ -13,7 +13,11 @@ from configuration import (
     OUTPUT_FILT_POSE_VIDEO,
     OUTPUT_FILT_POSE_XLSX,
     OUTPUT_RAW_GAZE_STEM,
+    OUTPUT_FILT_POSE_XLSX_CAM1,
+    OUTPUT_FILT_POSE_XLSX_CAM2,
     STEREO_CALIB_FILE,
+    OUTPUT_3D_XLSX,
+    STEREO_FRAME_OFFSET,
     load_pose_model,
     load_tracker,
     load_gaze_models,
@@ -92,19 +96,20 @@ def main():
             # No GPU models needed, purely geometry.
             
             print(f"Reconstructing 3D poses from:")
-            print(f"  cam1: {OUTPUT_FILT_POSE_XLSX}")
+            print(f"  cam1: {OUTPUT_FILT_POSE_XLSX_CAM1}")
             print(f"  cam2: {OUTPUT_FILT_POSE_XLSX_CAM2}")
             print(f"  calib: {STEREO_CALIB_FILE}")
             if STEREO_FRAME_OFFSET != 0:
                 print(f"  frame offset (cam2 lag): {STEREO_FRAME_OFFSET:+d} frames")
 
             reconstruct_3d(
-                xlsx_cam1    = str(OUTPUT_FILT_POSE_XLSX),
+                xlsx_cam1    = str(OUTPUT_FILT_POSE_XLSX_CAM1),
                 xlsx_cam2    = str(OUTPUT_FILT_POSE_XLSX_CAM2),
                 calib_path   = STEREO_CALIB_FILE,
                 out_path     = str(OUTPUT_3D_XLSX),
                 frame_offset = STEREO_FRAME_OFFSET,
             )
+            
 
         case _:
             print("Invalid choice. Please enter 1, 2, or 3.")
