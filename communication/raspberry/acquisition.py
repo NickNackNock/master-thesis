@@ -89,15 +89,19 @@ def check_camera_connected():
         return False, []
 
 
-def start_recording(fire_at, on_status=None):
-    global recording, recording_thread
+def start_recording(fire_at, on_status=None, show_preview=False):
+    global recording, recording_thread, SHOW_PREVIEW
+    
+    # Update the global flag so ALL functions (preview thread, push frame, etc.) see it
+    SHOW_PREVIEW = show_preview
+    
     if recording:
         print("\nRecording already started!")
         return
 
     recording_thread = threading.Thread(
         target=_capture_loop,
-        args=(fire_at, on_status),
+        args=(fire_at, on_status), # No need to pass show_preview here anymore
         daemon=True
     )
     recording_thread.start()
@@ -111,7 +115,7 @@ def stop_recording(fire_at, on_status=None):
         recording_thread = None
 
 
-# --------- Preview helpers (lightweight, Pi-budget friendly) ---------
+# --------- Preview helpers---------
 
 def _push_preview_frame(raw_array, frame_id):
     """Build a small preview frame and hand it to the display thread.
