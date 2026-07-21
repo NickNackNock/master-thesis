@@ -63,19 +63,7 @@ def subscribe(client: mqtt_client.Client):
 
         print(f"Received command '{command}' (scheduled_at={fire_at}) on {msg.topic}")
 
-        """
-        now = time.time()
-        if fire_at > now:
-            # Coarse sleep, then a tight spin for sub-millisecond accuracy
-            time.sleep(fire_at - now - 0.001)
-            while time.time() < fire_at:
-                pass
-        """
-
         match command:
-            case "START_PLAYER":
-                acquisition.open_viewer()
-                publish(client, "SpinView launched")
 
             case "START_RECORDING":
                 threading.Thread(
