@@ -18,21 +18,29 @@ TOPIC_SUB = "python/mqtt/commands"
 TOPIC_PUB = "python/mqtt/status"
 
 client_id = f'python-mqtt-{random.randint(0, 100_000)}'
+cam_n = "cam2"
 
 
 def connect_mqtt():
     def on_connect(client, userdata, flags, rc, properties=None):
         if rc == 0:
             print("Connected to MQTT Broker!")
-            client.publish(TOPIC_PUB, "Camera 2 connected", qos = 2, retain = True)
+
+            cam_ok, cam_info = acquisition.check_camera_connected()
+            if cam_ok:
+                status_msg = f"Raspberry {cam_n[3:]} connected - camera {cam_n} detected: {', '.join(cam_info)}"
+            else:
+                status_msg = f"Raspberry {cam_n[3:]} connected - WARNING: no camera detected!"
+
+            client.publish(TOPIC_PUB, status_msg, qos = 2, retain = True)
         else:
             print(f"Failed to connect, return code {rc}")
     
-    def on_disconnect(client, userdata, rc, properties=None, reasonCode=None):
-        if rc != 0:
-            print(f"Unexpected disconnection (rc={rc}). Auto-reconnecting…")
-        else:
+    def on_disconnect(client, userdata, disconnect_flags, reason_code, properties=None):
+        if reason_code == 0:
             print("Clean disconnection.")
+        else:
+            print(f"Unexpected disconnection (reason_code={reason_code}). Auto-reconnecting…")
 
     client = mqtt_client.Client(
         callback_api_version=CallbackAPIVersion.VERSION2,
@@ -65,11 +73,28 @@ def subscribe(client: mqtt_client.Client):
 
         match command:
 
+            case "CHECK_CAMERA":
+                cam_ok, cam_info = acquisition.check_camera_connected()
+                if cam_ok:
+                    publish(client, f"Camera check: connected - {', '.join(cam_info)}")
+                else:
+                    publish(client, "Camera check: NOT connected")
+
+            case "FB_VIDEO_START_RECORDING":
+                threading.Thread(
+                    target=acquisition.start_recording,
+                    args=(fire_at,),
+                    kwargs={"on_status": lambda msg: publish(client, msg),
+                            "show_preview": True},
+                    daemon=True
+                ).start()
+                
             case "START_RECORDING":
                 threading.Thread(
                     target=acquisition.start_recording,
                     args=(fire_at,),
-                    kwargs={"on_status": lambda msg: publish(client, msg)},
+                    kwargs={"on_status": lambda msg: publish(client, msg),
+                            "show_preview": False},
                     daemon=True
                 ).start()
 
