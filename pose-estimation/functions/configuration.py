@@ -1,105 +1,92 @@
 from pathlib import Path
 import torch
+import os
 
-# -------- DIRECTORIES --------
-VIDEO_NAME = "session_2026-07-07_17-17-02.805_cam1.mp4"
-INPUT_VIDEO = f"/home/neurolab/thesisProject/data/3d-pose/{VIDEO_NAME}"
-
-VIDEO_STEM = VIDEO_NAME[:-4]           # "output_ultra_cut"
-BASE_OUT   = Path(f"./output/{VIDEO_STEM}")
-
-OUTPUT_DIR_RAW_POSE  = BASE_OUT / "raw"      / "pose"
-OUTPUT_DIR_RAW_GAZE  = BASE_OUT / "raw"      / "gaze"
-OUTPUT_DIR_FILT_POSE = BASE_OUT / "filtered" / "pose"
-OUTPUT_DIR_FILT_GAZE = BASE_OUT / "filtered" / "gaze"
-
-# Check existence of directories and create them if they don't exist
-for _d in (OUTPUT_DIR_RAW_POSE, OUTPUT_DIR_RAW_GAZE,
-           OUTPUT_DIR_FILT_POSE, OUTPUT_DIR_FILT_GAZE):
-    _d.mkdir(parents=True, exist_ok=True)
-
-# -------- STEREO CALIBRATION --------
-# Example path setup in main.py
-# -------- STEREO 3D RECONSTRUCTION --------
-CAM1_VIDEO_NAME = "session_2026-07-07_17-17-02.805_cam1.mp4"
-CAM2_VIDEO_NAME = "session_2026-07-07_17-17-02.805_cam2.mp4"
-
-INPUT_VIDEO_CAM1 = f"/home/neurolab/thesisProject/data/videos/{CAM1_VIDEO_NAME}"
-INPUT_VIDEO_CAM2 = f"/home/neurolab/thesisProject/data/videos/{CAM2_VIDEO_NAME}"
-
-# Filtered pose xlsx for cam1
-OUTPUT_DIR_FILT_POSE_CAM1 = Path(f"./output/{CAM1_VIDEO_NAME[:-4]}/filtered/pose")
-OUTPUT_DIR_FILT_POSE_CAM1.mkdir(parents=True, exist_ok=True)
-OUTPUT_FILT_POSE_XLSX_CAM1 = OUTPUT_DIR_FILT_POSE_CAM1 / "pose_RTMO-L_filtered.xlsx"
-
-# Filtered pose xlsx for cam2
-OUTPUT_DIR_FILT_POSE_CAM2 = Path(f"./output/{CAM2_VIDEO_NAME[:-4]}/filtered/pose")
-OUTPUT_DIR_FILT_POSE_CAM2.mkdir(parents=True, exist_ok=True)
-OUTPUT_FILT_POSE_XLSX_CAM2 = OUTPUT_DIR_FILT_POSE_CAM2 / "pose_RTMO-L_filtered.xlsx"
-
-# Stereo calibration folder (contains .txt files)
-STEREO_CALIB_FILE = Path("/home/neurolab/thesisProject/data/3d-pose")
-
-# 3D reconstruction output
-OUTPUT_DIR_3D = Path(f"./output/3d_reconstruction")
-OUTPUT_DIR_3D.mkdir(parents=True, exist_ok=True)
-OUTPUT_3D_XLSX = OUTPUT_DIR_3D / "pose_3d.xlsx"
-
-# Frame offset: 0 if hardware-synced, otherwise the lag of cam2 relative to cam1
-STEREO_FRAME_OFFSET = 0
+# Just a check if the machine can use GPU or not
+def device_availability():
+    return "cuda:0" if torch.cuda.is_available() else "cpu"
 
 
-# -------- DEVICE --------
-# Adapts on which device is available on the system
-DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
+# Creating the corisponding folders 
+def check_output_folder(output_folder, PCI_n):
+
+    # Creating sub directories in the output folder
+    # of the current interactios
+    output_folder_raw = output_folder / PCI_n / "raw"
+    output_folder_filt = output_folder / PCI_n / "filt"
+
+    output_folder_raw.mkdir(parents = True, exist_ok = True)
+    output_folder_filt.mkdir(parents = True, exist_ok = True)   
+
+    return output_folder_raw, output_folder_filt
 
 
-# -------- OUTPUT FILES --------
-# REMINDER: change VIDEO_NAME above to switch between video inputs
+def file_names(output_folder_raw, output_folder_filt):
 
-# Pose — raw outputs
-OUTPUT_RAW_POSE_VIDEO   = OUTPUT_DIR_RAW_POSE / "pose_RTMO-L.mp4"           # no tracking
-OUTPUT_RAW_POSE_TRACKED = OUTPUT_DIR_RAW_POSE / "pose_RTMO-L_tracked.mp4"   # with tracking
-OUTPUT_RAW_POSE_XLSX    = OUTPUT_DIR_RAW_POSE / "pose_RTMO-L_tracked.xlsx"  # keypoint export
+    # --- Pose outputs ---
+    # Raw
+    output_video_pose_raw = output_folder_raw / "pose_RTMO-L.mp4"                   # no tracking
+    output_video_poseTracking_raw = output_folder_raw / "pose_RTMO-L_tracked.mp4"   # with tracking
+    output_xlsx_pose_raw = output_folder_raw / "pose_RTMO-L_tracked.xlsx"           # keypoint export
 
-# Pose — filtered outputs
-OUTPUT_FILT_POSE_VIDEO  = OUTPUT_DIR_FILT_POSE / "pose_RTMO-L_filtered.mp4"
-OUTPUT_FILT_POSE_XLSX   = OUTPUT_DIR_FILT_POSE / "pose_RTMO-L_filtered.xlsx"
-
-# Gaze — stem only (gaze.py appends _ID1.mp4, _ID2.mp4, _ID3.mp4)
-OUTPUT_RAW_GAZE_STEM    = OUTPUT_DIR_RAW_GAZE / "gaze_from_pose"
+    # Filt
+    output_video_pose_filt = output_folder_filt / "pose_RTMO-L_filtered.mp4"
+    output_xlsx_pose_filt = output_folder_filt / "pose_RTMO-L_tracked.xlsx"   
 
 
-# -------- MODEL CONFIGURATION --------
-# --- Gaze ---
-# After some trial and error, I found this combination to produce satisfactory results
-GAZELLE_CKPT = "/home/neurolab/repositories/gazelle/checkpoints/gazelle_dinov2_vitl14_inout_childplay.pt"
+    # --- Gaze output ---
+    # Since it is uses the filtered pose we put it there
+    output_video_gaze_filt = output_folder_filt / "Gaze"
+    #output_xlsx_gaze_filt = output_folder_filt / "Gaze.xlsx"    To be decided
 
-DETECTOR     = "yolov8l"
-TRACKER_TYPE = "botsort"
-REID         = "clip_market1501"
+    # Putting everything into a variable 
+    output_files = {
+        "output_video_pose_raw" :        output_video_pose_raw,
+        "output_video_poseTracking_raw": output_video_poseTracking_raw,
+        "output_xlsx_pose_raw" :         output_xlsx_pose_raw,
 
-# --- Pose ---
-BACKEND           = 'onnxruntime'
-openpose_skeleton = False
+        "output_video_pose_filt" :        output_video_pose_filt,
+        "output_xlsx_pose_filt" :        output_xlsx_pose_filt,
 
-# This is the best model so far that can identify CHILD/PARENT Keypoints
-# by leveraging its one-stage efficiency
-# It is possible to test other models, from custom to preset
-# Check the github at the following link: https://github.com/Tau-J/rtmlib
-# For a more detailed structure: https://deepwiki.com/Tau-J/rtmlib/4.2.2-rtmo
-RTMO_MODEL_URL = (
-    "https://download.openmmlab.com/mmpose/v1/projects/rtmo/onnx_sdk/"
-    "rtmo-l_16xb16-600e_body7-640x640-b37118ce_20231211.zip"
-)
+        "output_video_gaze_filt" :        output_video_gaze_filt,
+        #"output_xlsx_gaze_filt" :        output_xlsx_gaze_filt,
+       
+    }
+    return output_files
 
+def defined_thresholds():
+    thesholds = {
+        # Theshold to visualize in the videos produced
+        # TODO: Why am I puttingdifferent thesholds?
+        #       Doesn0t make much sense to me
+        "visualization" : 0.7,
+        "head_bbox"     : 0.5,
+        "gaze_body_valid": 0.5,
 
-# -------- LAZY MODEL LOADERS --------
+    }
+
+    return thesholds
+
+# --------  MODEL LOADERS --------
 # Models are instantiated on demand so that importing this module never
 # triggers heavy GPU allocations just to read a path constant.
 
 def load_pose_model():
-    """Instantiates and returns the RTMO pose model."""
+    # This is the best model so far that can identify CHILD/PARENT Keypoints
+    # by leveraging its one-stage efficiency
+    # It is possible to test other models, from custom to preset
+    # Check the github at the following link: https://github.com/Tau-J/rtmlib
+    # For a more detailed structure: https://deepwiki.com/Tau-J/rtmlib/4.2.2-rtmo
+
+    RTMO_MODEL_URL = (
+        "https://download.openmmlab.com/mmpose/v1/projects/rtmo/onnx_sdk/"
+        "rtmo-l_16xb16-600e_body7-640x640-b37118ce_20231211.zip"
+    )
+
+    BACKEND = 'onnxruntime'
+
+    DEVICE = device_availability()
+
     from rtmlib import RTMO
     model = RTMO(onnx_model=RTMO_MODEL_URL, backend=BACKEND, device=DEVICE)
     print("Pose model (RTMO-L) loaded.")
@@ -107,26 +94,50 @@ def load_pose_model():
 
 
 def load_tracker():
-    """Instantiates and returns the BoxMOT tracker (used for pose tracking)."""
+    """
+    Instantiates and returns the BoxMOT tracker (used for pose tracking).
+
+    Builds a BotSORT tracker with a CLIP/Market1501 re-ID backbone. This is
+    what turns per-frame RTMO detections into stable track IDs across
+    frames
+
+    Personalized config .yaml to allow better recofgnition of people when disappearing from
+    view for long periods of time and allow less ID swap
+    """
+
     from boxmot.trackers.tracker_zoo import create_tracker
+
+    DEVICE = device_availability()
+    REID = "clip_market1501"
+    TRACKER_TYPE = "botsort"
+
+    # If file not found default it to None, which usees default parameters
+    tracker_config_path = Path("/home/neurolab/thesisProject/src/pose-gaze-3/files/configs/botsort_thesis.yaml")
+    if not tracker_config_path.exists():
+        print("Personal configuration file not found. \n" \
+        "       Going back to default parameters")
+        tracker_config_path = None
+        
     tracker = create_tracker(
         tracker_type   = TRACKER_TYPE,
-        tracker_config = None,
+        tracker_config = tracker_config_path,
         reid_weights   = Path(f"{REID}.pt"),
         device         = DEVICE,
-        half           = False,  # Gazelle's ReID model at full resolution, slower but more accurate
+        half           = False,
     )
+
     print(f"Tracker ({TRACKER_TYPE} + {REID}) loaded.")
     return tracker
 
 
-def load_gaze_models(with_tracker: bool = False) -> dict:
+def load_gaze_models() -> dict:
     """
     Loads Gazelle and returns the variables dict consumed by gaze.py.
-    Pass with_tracker=True only when using run_gaze_estimation() (legacy full pipeline)
-    which needs tracker inside the dict. The new run_gaze_from_pose_xlsx() doesn't.
     """
     from gazelle.model import get_gazelle_model
+
+    DEVICE = device_availability()
+    GAZELLE_CKPT = "/home/neurolab/repositories/gazelle/checkpoints/gazelle_dinov2_vitl14_inout_childplay.pt"
 
     gazelle, gazelle_transform = get_gazelle_model("gazelle_dinov2_vitl14_inout")
     gazelle.load_gazelle_state_dict(torch.load(GAZELLE_CKPT, weights_only=True))
@@ -137,10 +148,8 @@ def load_gaze_models(with_tracker: bool = False) -> dict:
     result = {
         "gazelle":           gazelle,
         "gazelle_transform": gazelle_transform,
-        "DEVICE":            DEVICE,
+        "DEVICE":            DEVICE
     }
 
-    if with_tracker:
-        result["tracker"] = load_tracker()
-
     return result
+
