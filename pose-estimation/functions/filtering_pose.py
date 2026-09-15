@@ -1,16 +1,10 @@
-"""
-Keypoint filtering pipeline for multi-person pose-estimation data.
-
-Input:  an .xlsx file with one sheet per detected person. Each sheet has a
-        "frame" column plus kp_<name>_x, kp_<name>_y, score_<name> columns.
-Output: a filtered .xlsx (same structure) ready to feed back into your
-        video-drawing step.
-"""
-
 import numpy as np
 import pandas as pd
-from scipy.signal import butter, filtfilt
+from scipy.signal import savgol_filter, medfilt
+from openpyxl import Workbook
+from openpyxl.styles import PatternFill, Font, Alignment
 
+# Keypoint column naming convention
 KEYPOINT_NAMES = [
     "Nose", "Left Eye", "Right Eye", "Left Ear", "Right Ear",
     "Left Shoulder", "Right Shoulder", "Left Elbow", "Right Elbow",
@@ -18,40 +12,55 @@ KEYPOINT_NAMES = [
     "Left Knee", "Right Knee", "Left Ankle", "Right Ankle",
 ]
 
+DEFAULT_SCORE_THRESH = 0.7
+
 
 def _kp_col(name: str) -> str:
-    """Normalize a keypoint display name to a column-key string.
-    e.g.  'Left Eye'  →  'left_eye'
-    Must match the convention used by KeypointDataSaver in pose.py.
-    """
     return name.lower().replace(" ", "_")
 
 
-# ---------------------------------------------------------------------------
-# I/O
-# ---------------------------------------------------------------------------
-
 def load_people_sheets(xlsx_path):
-    """Returns {sheet_name: DataFrame} for every person in the file."""
     return pd.read_excel(xlsx_path, sheet_name=None)
 
-
+# A function to save the filtered keypoints into an xlsx file
+# A sheet for each person, stylized to see better the data
 def save_people_sheets(sheets: dict, out_path: str):
-    with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
-        for name, df in sheets.items():
-            df.to_excel(writer, sheet_name=name, index=False)
+    wb = Workbook()
+    wb.remove(wb.active)
+
+    # Styling for the header and cells
+    header_fill = PatternFill("solid", start_color="4F81BD")
+    header_font = Font(bold=True, color="FFFFFF", name="Arial", size=10)
+    cell_font = Font(name="Arial", size=10)
+
+    for name, df in sheets.items():
+        ws = wb.create_sheet(title=str(name))
+        
+        if df.empty:
+            continue
+
+        headers = list(df.columns)
+        
+        for col, h in enumerate(headers, start=1):
+            cell = ws.cell(row=1, column=col, value=h)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal="center", wrap_text=True)
+            ws.column_dimensions[cell.column_letter].width = 14
+
+        for row_idx, row_data in enumerate(df.itertuples(index=False), start=2):
+            for col, val in enumerate(row_data, start=1):
+                clean_val = None if pd.isna(val) else val
+                cell = ws.cell(row=row_idx, column=col, value=clean_val)
+                cell.font = cell_font
+
+        ws.freeze_panes = "B2"
+
+    wb.save(out_path)
 
 
-# ---------------------------------------------------------------------------
-# DataFrame <-> array conversion (frame-index aware)
-# ---------------------------------------------------------------------------
-
+# DataFrame <-> array conversion
 def df_to_arrays(df: pd.DataFrame, kp_names=KEYPOINT_NAMES):
-    """
-    Reindexes onto the full contiguous frame range so array position ==
-    actual frame offset. Frames the person was never detected in become
-    NaN rows (instead of being silently skipped).
-    """
     df = df.sort_values("frame")
     frames = df["frame"].to_numpy()
     full_frames = np.arange(frames.min(), frames.max() + 1)
@@ -73,11 +82,6 @@ def df_to_arrays(df: pd.DataFrame, kp_names=KEYPOINT_NAMES):
 
 
 def arrays_to_df(frames, kp_seq, scores, kp_names=KEYPOINT_NAMES):
-    """
-    Converts filtered arrays back to a DataFrame using the same lowercase
-    column convention as KeypointDataSaver in pose.py (kp_left_eye_x, etc.)
-    so that the filtered xlsx can be loaded directly by gaze.py.
-    """
     data = {"frame": frames}
     for i, name in enumerate(kp_names):
         key = _kp_col(name)
@@ -87,99 +91,101 @@ def arrays_to_df(frames, kp_seq, scores, kp_names=KEYPOINT_NAMES):
     return pd.DataFrame(data)
 
 
-# ---------------------------------------------------------------------------
-# Filtering
-# ---------------------------------------------------------------------------
 
-def interpolate_missing(kp_seq: np.ndarray, scores: np.ndarray, score_thresh: float = 0.5):
+# --------  FILTERING --------
+def process_keypoint_track(kp_x, kp_y, scores, window_len, polyorder, min_seg_len, median_kernel=3):
     """
-    Linearly interpolates over missing/low-confidence frames for each
-    keypoint independently. Returns the interpolated sequence plus a
-    (n_frames, n_kp) boolean mask of which frames were ever "valid" for
-    each keypoint (i.e. detected with score above threshold).
+    Isolates chunks of valid data (above threshold), smoothes short 
+    noise, and applies Savitzky-Golay filtering only to the valid segments.
 
-    Keypoints with fewer than 2 valid points can't be interpolated and are
-    left as NaN -- the caller must not filter or draw these.
+    Filter all points regardless of score, but then when it will come to visualization
+    they won't matter
+    At least you can choose how much to visualize
     """
-    kp_seq = kp_seq.copy()
-    n_frames, n_kp, _ = kp_seq.shape
-    valid_mask = np.zeros((n_frames, n_kp), dtype=bool)
-    idx_all = np.arange(n_frames)
+    n_frames = len(scores)
+    # Valid means actually contains coordinate data
+    valid =  ~np.isnan(kp_x)
 
-    for k in range(n_kp):
-        valid = (scores[:, k] > score_thresh) & ~np.isnan(kp_seq[:, k, 0])
-        valid_mask[:, k] = valid
+    # Pad with False to easily find start/end boundaries of valid segments
+    padded = np.pad(valid, (1, 1), mode='constant', constant_values=False)
+    diff = np.diff(padded.astype(int))
+    starts = np.where(diff == 1)[0]
+    ends = np.where(diff == -1)[0]
 
-        if valid.sum() < 2:
-            kp_seq[:, k, :] = np.nan
+    # Initialize blank output arrays (0.0 coords / 0.0 score is standard for dropped/missing points)
+    out_x = np.zeros(n_frames)
+    out_y = np.zeros(n_frames)
+    out_scores = np.zeros(n_frames)
+
+    #TODO: Check if this is the best way to do it, maybe there is a better way to do it
+    #      Maybe a simple Butterworth
+    for s, e in zip(starts, ends):
+        seg_len = e - s
+
+        # Short-burst Rejection (Despeckling)
+        # If the detection only lasted a few frames between gaps, it's likely noise. Drop it.
+        if seg_len < min_seg_len:
             continue
 
-        for axis in range(2):
-            kp_seq[:, k, axis] = np.interp(idx_all, idx_all[valid], kp_seq[valid, k, axis])
+        seg_x = kp_x[s:e].copy()
+        seg_y = kp_y[s:e].copy()
 
-    return kp_seq, valid_mask
+        # Local Median Filter (Optional but highly recommended)
+        # Kills 1-frame tracking spikes *inside* the valid segment before Savgol smooths them.
+        if median_kernel > 1 and seg_len >= median_kernel:
+            seg_x = medfilt(seg_x, kernel_size=median_kernel)
+            seg_y = medfilt(seg_y, kernel_size=median_kernel)
 
+        # Dynamic Savgol Filter
+        # N.B: SciPy requires window_len > polyorder, and window_len must be odd.
+        w = min(window_len, seg_len)
+        if w % 2 == 0:
+            w -= 1
 
-"""def safe_filtfilt(b, a, signal: np.ndarray) -> np.ndarray:
-    #filtfilt raises if the signal is too short for its default padding;
-    #fall back to returning the (already interpolated) signal unfiltered.
-    padlen = 3 * max(len(a), len(b))
-    if len(signal) <= padlen:
-        return signal
-    return filtfilt(b, a, signal)"""
+        if w > polyorder:
+            seg_x = savgol_filter(seg_x, window_length=w, polyorder=polyorder)
+            seg_y = savgol_filter(seg_y, window_length=w, polyorder=polyorder)
 
+        # Write the cleaned segment back to the output
+        out_x[s:e] = seg_x
+        out_y[s:e] = seg_y
+        out_scores[s:e] = scores[s:e]
 
-def lowpass_filter_keypoints(kp_seq: np.ndarray, fps: float, cutoff: float = 6.0,
-                              order: int = 2, valid_mask: np.ndarray = None) -> np.ndarray:
-    """
-    kp_seq: (n_frames, n_keypoints, 2), already gap-free (interpolated).
-    valid_mask: (n_frames, n_keypoints) bool -- keypoints with < 2 valid
-        samples are skipped instead of filtering NaN/garbage.
-    """
-    nyquist = fps / 2.0
-    if cutoff >= nyquist:
-        cutoff = 0.99 * nyquist  # clamp instead of letting butter() error out
-
-    normal_cutoff = cutoff / nyquist
-    b, a = butter(order, normal_cutoff, btype="low", analog=False)
-
-    filtered = kp_seq.copy()
-    n_kp = kp_seq.shape[1]
-
-    
-    for k in range(n_kp):
-        if valid_mask is not None and valid_mask[:, k].sum() < 2:
-            continue
-        for axis in range(2):
-            filtered[:, k, axis] = filtfilt(b, a, kp_seq[:, k, axis])
-            print(f"Filtered keypoint {k} axis {axis}")
-
-    return filtered 
+    return out_x, out_y, out_scores
 
 
-def filter_person(df: pd.DataFrame, fps: float, cutoff: float = 6.0, order: int = 2,
-                   score_thresh: float = 0.5, kp_names=KEYPOINT_NAMES) -> pd.DataFrame:
-    """Full per-person pipeline: reindex -> interpolate -> lowpass filter -> back to df."""
+def filter_person(df: pd.DataFrame, 
+                  window_len: int = 11, polyorder: int = 3, 
+                  min_seg_len: int = 3, kp_names=KEYPOINT_NAMES) -> pd.DataFrame:
+    """Full per-person pipeline: reindex -> extract valid segments -> savgol filter -> back to df."""
     frames, kp_seq, scores = df_to_arrays(df, kp_names)
-    kp_interp, valid_mask = interpolate_missing(kp_seq, scores, score_thresh)
-    kp_filtered = lowpass_filter_keypoints(kp_interp, fps, cutoff, order, valid_mask)
+    
+    n_frames, n_kp, _ = kp_seq.shape
+    kp_filtered = np.zeros_like(kp_seq)
+    out_scores = np.zeros_like(scores)
 
-    # Keypoints that were never reliably detected: zero them out and force
-    # score to 0 so downstream drawing code skips them (kpt_thr will hide them).
-    never_valid = ~valid_mask.any(axis=0)  # (n_kp,)
-    out_scores = np.where(np.isnan(scores), 0.0, scores)
-    out_scores[:, never_valid] = 0.0
-    kp_filtered[:, never_valid, :] = 0.0
+    for k in range(n_kp):
+        fx, fy, fs = process_keypoint_track(
+            kp_seq[:, k, 0], 
+            kp_seq[:, k, 1], 
+            scores[:, k], 
+            window_len=window_len,
+            polyorder=polyorder,
+            min_seg_len=min_seg_len,
+            median_kernel=3             # Set to 0 if you want to bypass median spike removal
+        )
+        kp_filtered[:, k, 0] = fx
+        kp_filtered[:, k, 1] = fy
+        out_scores[:, k] = fs
 
     return arrays_to_df(frames, kp_filtered, out_scores, kp_names)
 
 
-def filter_all_people(xlsx_path: str, out_path: str, fps: float, cutoff: float = 6.0,
-                       order: int = 2, score_thresh: float = 0.5, kp_names=KEYPOINT_NAMES):
-    """Loads every sheet, filters each person, saves a new .xlsx with the same sheet names."""
+def filter_all_people(xlsx_path: str, out_path: str,
+                      window_len: int = 11, polyorder: int = 3, min_seg_len: int = 3, kp_names=KEYPOINT_NAMES):
     sheets = load_people_sheets(xlsx_path)
     filtered_sheets = {
-        name: filter_person(df, fps, cutoff, order, score_thresh, kp_names)
+        name: filter_person(df, window_len, polyorder, min_seg_len, kp_names)
         for name, df in sheets.items()
     }
     save_people_sheets(filtered_sheets, out_path)
@@ -187,19 +193,14 @@ def filter_all_people(xlsx_path: str, out_path: str, fps: float, cutoff: float =
     return filtered_sheets
 
 
-# ---------------------------------------------------------------------------
-# Video drawing (multi-person aware)
-# ---------------------------------------------------------------------------
 
+# --------  VIDEO DRAWING --------
 def draw_filtered_video(input_video_path: str, output_video_path: str, person_dfs: dict,
-                         kp_names=KEYPOINT_NAMES, kpt_thr: float = 0.5):
-    """
-    person_dfs: {person_name: filtered_df}, as returned by filter_all_people.
-    Draws all detected people for each frame in one pass (rather than one
-    person at a time, since draw_skeleton expects all instances together).
-    """
+                         kp_names=KEYPOINT_NAMES, kpt_thr: float = 0.7):
     import cv2
     from rtmlib import draw_skeleton
+
+    indexed_dfs = {name: df.set_index("frame") for name, df in person_dfs.items()}
 
     cap = cv2.VideoCapture(input_video_path)
     fps = cap.get(cv2.CAP_PROP_FPS)
@@ -214,13 +215,10 @@ def draw_filtered_video(input_video_path: str, output_video_path: str, person_df
             break
 
         all_kps, all_scores = [], []
-        for df in person_dfs.values():
-            row = df[df["frame"] == frame_idx]
-            if row.empty:
+        for df in indexed_dfs.values():
+            if frame_idx not in df.index:
                 continue
-            row = row.iloc[0]
-            # Use _kp_col() so lookup matches the lowercase column names written
-            # by arrays_to_df (e.g. "Left Eye" → "kp_left_eye_x")
+            row = df.loc[frame_idx]
             kps    = np.array([[row[f"kp_{_kp_col(n)}_x"],
                                 row[f"kp_{_kp_col(n)}_y"]] for n in kp_names])
             scores = np.array([row[f"score_{_kp_col(n)}"]  for n in kp_names])
@@ -228,6 +226,7 @@ def draw_filtered_video(input_video_path: str, output_video_path: str, person_df
             all_scores.append(scores)
 
         if all_kps:
+            # We use the exact same threshold here that we used to filter
             frame = draw_skeleton(frame, np.array(all_kps), np.array(all_scores), kpt_thr=kpt_thr)
         writer.write(frame)
 
@@ -236,24 +235,24 @@ def draw_filtered_video(input_video_path: str, output_video_path: str, person_df
     print(f"Filtered video saved → {output_video_path}")
 
 
-# ---------------------------------------------------------------------------
 # Example usage
-# ---------------------------------------------------------------------------
-
+"""
 if __name__ == "__main__":
-    FPS = 25.0  # use your video's actual fps, e.g. via cv2.VideoCapture(...).get(cv2.CAP_PROP_FPS)
+    SCORE_THRESH = 0.7
 
     filtered_sheets = filter_all_people(
         xlsx_path="/home/neurolab/thesisProject/output/output_ultra_cut/pose/pose_RTMO-L.xlsx",
         out_path="keypoints_output_filtered.xlsx",
-        fps=FPS,
-        cutoff=6.0,     # Hz -- lower = smoother but more lag. 4-8 Hz is typical for human movement.
-        order=2,        # filtfilt makes this effectively 4th-order, zero-phase
-        score_thresh=0.8,
+        score_thresh=SCORE_THRESH,
+        window_len=11,      # Savgol window. Must be odd. Higher = smoother. 11 = ~0.4s at 25fps.
+        polyorder=3,        # Polynomial order. 2 or 3 is best for human motion.
+        min_seg_len=3       # Drop any valid detection streaks shorter than this many frames.
     )
 
     draw_filtered_video(
         input_video_path="/home/neurolab/thesisProject/data/videos/output_ultra_cut.mp4",
-        output_video_path="output_filtered.mp4",
+        output_video_path=OUTPUT_FILT_POSE_VIDEO,
         person_dfs=filtered_sheets,
+        kpt_thr=SCORE_THRESH
     )
+"""
